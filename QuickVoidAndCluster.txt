@@ -1,0 +1,568 @@
+// Instructions: wire "MemBus" to a Digital Screen
+
+
+#define WIDE 16
+#define TALL 16
+
+DATA
+
+bool_image:
+ALLOC WIDE*TALL
+
+bool_image_dup:
+ALLOC WIDE*TALL
+
+cluster_image:
+ALLOC WIDE*TALL
+
+dist_image:
+ALLOC (WIDE/2 + 1)*(TALL/2 + 1)
+
+blue_image:
+ALLOC WIDE*TALL
+
+void_x:
+DB 0
+void_y:
+DB 0
+void_size:
+DB 999999
+
+cluster_x:
+DB 0
+cluster_y:
+DB 0
+cluster_size:
+DB 0
+
+CODE
+
+main_setup_screen:
+MOV GS, 65536		// The beginning of the digital screen's memory
+MOV [GS:1048569], 2     // color format as 0xRRGGBB
+MOV [GS:1048572], WIDE  // screen width (max 512)
+MOV [GS:1048573], TALL  // screen height (max 512)
+CALL dist_calculate
+CALL clear_screen
+CALL gen_rand
+CALL spread_image
+CALL make_noise
+JMP main_end
+
+
+gen_rand: // generate random image
+PUSH EAX
+PUSH EBX
+MOV EAX, 0
+MOV EDI, bool_image
+gen_rand_loop1:
+    CMP EAX, WIDE*TALL
+    JGE gen_rand_loop1_end
+    
+    RAND EBX
+    MUL EBX, 10
+    FINT EBX
+    CMP EBX, 0
+    JE gen_rand_loop1_notfilled
+        MOV [EDI], 0
+        JMP gen_rand_loop1_filled
+    gen_rand_loop1_notfilled:
+        MOV [EDI], 1
+        MOV R6, EAX
+        MOV EBX, EAX
+        MOD EBX, TALL
+        SUB EAX, EBX
+        DIV EAX, TALL
+        CALL cluster_add
+        MOV EAX, R6
+    gen_rand_loop1_filled:
+    MOV R1, EAX
+    MOD R1, TALL
+    MOV R0, EAX
+    SUB R0, R1
+    DIV R0, TALL
+    CALL redraw_pixel
+    
+    INC EAX
+    INC EDI
+    JMP gen_rand_loop1
+gen_rand_loop1_end:
+POP EBX
+POP EAX
+RET
+
+
+clear_screen: // clear the screen with dark red
+PUSH EAX
+MOV EAX, 0
+clear_screen_loop:
+CMP EAX, WIDE*TALL
+JGE clear_screen_loop_end
+MOV [GS:EAX], 0x330011
+MOV [EAX:cluster_image], 0
+INC EAX
+JMP clear_screen_loop
+clear_screen_loop_end:
+POP EAX
+RET
+
+
+disp_bool_img: // display the current image
+PUSH EAX
+PUSH EBX
+PUSH ESI
+MOV EAX, 0
+MOV ESI, bool_image
+disp_bool_img_loop:
+    CMP EAX, WIDE*TALL
+    JGE disp_bool_img_loop_end
+    
+    MOV EBX, [ESI]
+    BIT EBX, 0
+    JZ disp_bool_img_loop_empty
+        MOV [GS:EAX], 0xFF0000
+        JMP disp_bool_img_loop_filled
+    disp_bool_img_loop_empty:
+        MOV [GS:EAX], 0x00FFFF
+    disp_bool_img_loop_filled:
+    
+    INC ESI
+    INC EAX
+    JMP disp_bool_img_loop
+disp_bool_img_loop_end:
+POP ESI
+POP EBX
+POP EAX
+RET
+
+
+disp_cluster_img:
+    PUSH EAX
+    PUSH EBX
+    PUSH EDI
+    
+    MOV EDI, 0
+    MOV EAX, 0
+    disp_cluster_img_x:
+        CMP EAX, WIDE
+        JGE disp_cluster_img_x_end
+        MOV EBX, 0
+        disp_cluster_img_y:
+            CMP EBX, TALL
+            JGE disp_cluster_img_y_end
+            
+            MOV R0, [EDI:cluster_image]
+            MUL R0, 50
+            FINT R0
+            MOV R1, EBX
+            MUL R1, WIDE
+            ADD R1, EAX
+            MOV [GS:R1], R0
+            
+            INC EDI
+            INC EBX
+            JMP disp_cluster_img_y
+        disp_cluster_img_y_end:
+    
+        INC EAX
+        JMP disp_cluster_img_x
+    disp_cluster_img_x_end:
+    
+    POP EDI
+    POP EBX
+    POP EAX
+RET
+
+
+dist_calculate:
+PUSH EAX
+PUSH EBX
+PUSH ECX
+PUSH EDX
+PUSH EDI
+MOV EAX, 0
+MOV EDI, dist_image
+dist_calculate_xloop:
+    CMP EAX, WIDE/2
+    JG dist_calculate_xloop_end
+    MOV EBX, 0
+    dist_calculate_yloop:
+        CMP EBX, TALL/2
+        JG dist_calculate_yloop_end
+        
+        MOV ECX, EAX
+        MUL ECX, ECX
+        MOV EDX, EBX
+        MUL EDX, EDX
+        ADD ECX, EDX
+        //ADD ECX, 1
+        //FINV ECX
+        //MOV EDX, ECX
+        DIV ECX, -4.5
+        FE EDX
+        FPWR EDX, ECX
+        MOV [EDI], EDX
+        
+        INC EDI
+        INC EBX
+        JMP dist_calculate_yloop
+    dist_calculate_yloop_end:
+    INC EAX
+    JMP dist_calculate_xloop
+dist_calculate_xloop_end:
+POP EDI
+POP EDX
+POP ECX
+POP EBX
+POP EAX   
+RET
+
+
+cluster_add:
+// x in EAX
+// y in EBX
+MOV [cluster_size], -1
+MOV [void_size], WIDE*TALL+1
+PUSH ECX
+PUSH EDX
+PUSH EDI
+MOV ECX, EAX
+MOV EDX, EBX
+MOV EAX, -WIDE/2
+MOV EDI, 0
+cluster_add_loopX: 
+    CMP EAX, WIDE/2
+    JGE cluster_add_loopX_end
+    MOV EBX, -TALL/2
+    cluster_add_loopY:
+        CMP EBX, TALL/2
+        JGE cluster_add_loopY_end
+        
+        FABS R0, EAX
+        MUL R0, TALL/2+1
+        FABS R1, EBX
+        ADD R0, R1
+        MOV R1, [R0:dist_image]
+       
+        MOV R2, ECX
+        ADD R2, EAX
+        ADD R2, WIDE
+        MOD R2, WIDE
+        MOV R3, EDX
+        ADD R3, EBX
+        ADD R3, TALL
+        MOD R3, TALL
+        
+        MOV R4, R2
+        MUL R4, TALL
+        ADD R4, R3
+        MOV R7, [R4:cluster_image]
+        ADD R7, R1
+        MOV [R4:cluster_image], R7
+        
+        MOV R0, [R4:bool_image]
+        MOV R1, [R4:cluster_image]
+        BIT R0, 0
+        JNZ cluster_add_filled
+            CMP R1, [void_size]
+            JGE cluster_add_empty_fail
+                MOV [void_size], R1
+                MOV [void_x], R2
+                MOV [void_y], R3
+            cluster_add_empty_fail:
+            JMP cluster_add_empty
+        cluster_add_filled:
+            CMP R1, [cluster_size]
+            JLE cluster_add_filled_fail
+                MOV [cluster_size], R1
+                MOV [cluster_x], R2
+                MOV [cluster_y], R3
+            cluster_add_filled_fail:
+        cluster_add_empty:
+        
+        INC EDI
+        INC EBX
+        JMP cluster_add_loopY
+    cluster_add_loopY_end:
+    INC EAX
+    JMP cluster_add_loopX
+cluster_add_loopX_end:
+MOV EAX, ECX
+MOV EBX, EDX
+POP EDI
+POP EDX
+POP ECX
+RET
+
+
+cluster_sub:
+// x in EAX
+// y in EBX
+MOV [cluster_size], -1
+MOV [void_size], WIDE*TALL+1
+PUSH ECX
+PUSH EDX
+PUSH EDI
+MOV ECX, EAX
+MOV EDX, EBX
+MOV EAX, -WIDE/2
+cluster_sub_loopX: 
+    CMP EAX, WIDE/2
+    JGE cluster_sub_loopX_end
+    MOV EBX, -TALL/2
+    cluster_sub_loopY:
+        CMP EBX, TALL/2
+        JGE cluster_sub_loopY_end
+        
+        FABS R0, EAX
+        MUL R0, TALL/2+1
+        FABS R1, EBX
+        ADD R0, R1
+        MOV R1, [R0:dist_image]
+       
+        MOV R2, ECX
+        ADD R2, EAX
+        ADD R2, WIDE
+        MOD R2, WIDE
+        MOV R3, EDX
+        ADD R3, EBX
+        ADD R3, TALL
+        MOD R3, TALL
+        
+        MOV R4, R2
+        MUL R4, TALL
+        ADD R4, R3
+        MOV R7, [R4:cluster_image]
+        SUB R7, R1
+        MOV [R4:cluster_image], R7
+        
+        MOV R0, [R4:bool_image]
+        MOV R1, [R4:cluster_image]
+        BIT R0, 0
+        JNZ cluster_sub_filled
+            CMP R1, [void_size]
+            JGE cluster_sub_empty_fail
+                MOV [void_size], R1
+                MOV [void_x], R2
+                MOV [void_y], R3
+            cluster_sub_empty_fail:
+            JMP cluster_sub_empty
+        cluster_sub_filled:
+            CMP R1, [cluster_size]
+            JLE cluster_sub_filled_fail
+                MOV [cluster_size], R1
+                MOV [cluster_x], R2
+                MOV [cluster_y], R3
+            cluster_sub_filled_fail:
+        cluster_sub_empty:
+        
+        INC EBX
+        JMP cluster_sub_loopY
+    cluster_sub_loopY_end:
+    INC EAX
+    JMP cluster_sub_loopX
+cluster_sub_loopX_end:
+MOV EAX, ECX
+MOV EBX, EDX
+POP EDI
+POP EDX
+POP ECX
+RET
+
+
+redraw_pixel:
+// X in R0
+// Y in R1
+MOV R2, R0
+MUL R2, TALL
+ADD R2, R1
+MUL R1, WIDE
+ADD R0, R1
+BIT [R2:bool_image], 0
+JZ redraw_pixel_jump
+    MOV [GS:R0], 0x000000
+    JMP redraw_pixel_else
+redraw_pixel_jump:
+    MOV [GS:R0], 0xFFFFFF
+redraw_pixel_else:
+RET
+
+
+redraw_pixel_blue:
+// X in R0
+// Y in R1
+MOV R2, R0
+MUL R2, TALL
+ADD R2, R1
+MUL R1, WIDE
+ADD R0, R1
+MOV R3, [R2:blue_image]
+DIV R3, WIDE*TALL
+MUL R3, 256
+FINT R3
+MOV R4, R3
+BSHL R3, 8
+BOR R3, R4
+BSHL R3, 8
+BSHR R4, 1
+BOR R3, R4
+MOV [GS:R0], R3
+RET
+
+
+spread_image:
+    PUSH EAX
+    PUSH EBX
+    PUSH ECX
+    PUSH EDX
+    
+    spread_image_loop:
+        MOV EAX, [cluster_x]
+        MOV EBX, [cluster_y]
+        MOV R0, EAX
+        MUL R0, TALL
+        ADD R0, EBX
+        MOV [R0:bool_image], 0
+        MOV R0, EAX
+        MOV R1, EBX
+        CALL redraw_pixel
+        CALL cluster_sub
+        
+        MOV ECX, EAX
+        MOV EDX, EBX
+        MOV EAX, [void_x]
+        MOV EBX, [void_y]
+        MOV R0, EAX
+        MUL R0, TALL
+        ADD R0, EBX
+        MOV [R0:bool_image], 1
+        MOV R0, EAX
+        MOV R1, EBX
+        CALL redraw_pixel
+        CALL cluster_add
+        
+        CMP EAX, ECX
+        JNE spread_image_loop
+        CMP EBX, EDX
+        JNE spread_image_loop
+    // END LOOP
+    
+    POP EDX
+    POP ECX
+    POP EBX
+    POP EAX
+RET
+
+
+make_noise:
+PUSH EAX
+PUSH EBX
+PUSH ECX
+PUSH EDX
+PUSH ESI
+PUSH EDI
+
+MOV R0, 0
+MOV R1, 0
+make_noise_loop1:
+    BIT [R1:bool_image], 0
+    JZ make_noise_loop1_skip
+        INC R0
+    make_noise_loop1_skip:
+    INC R1
+    CMP R1, WIDE*TALL
+    JL make_noise_loop1
+// END LOOP 1
+
+MOV ESI, bool_image
+MOV EDI, bool_image_dup
+MCOPY WIDE*TALL
+
+MOV R1, R0
+make_noise_loop2:
+    DEC R1
+    
+    MOV EAX, [cluster_x]
+    MOV EBX, [cluster_y]
+    MOV ECX, EAX
+    MUL ECX, TALL
+    ADD ECX, EBX
+    MOV [ECX:bool_image], 0
+    MOV [ECX:blue_image], R1
+    PUSH R0
+    PUSH R1
+    MOV R0, EAX
+    MOV R1, EBX
+    CALL redraw_pixel_blue
+    CALL cluster_sub
+    POP R1
+    POP R0
+
+    CMP R1, 0
+    JG make_noise_loop2
+// END LOOP 2
+
+MOV R1, 0
+make_noise_loop3:
+    MOV [R1:cluster_image], 0
+    INC R1
+    CMP R1, WIDE*TALL
+    JNE make_noise_loop3
+// END LOOP 3
+
+MOV R1, 0
+make_noise_loop4:
+    MOV R2, [R1:bool_image_dup]
+    MOV [R1:bool_image], R2
+    BIT R2, 0
+    JZ make_noise_loop4_if
+        MOV EBX, R1
+        MOD EBX, TALL
+        MOV EAX, R1
+        SUB EAX, EBX
+        DIV EAX, TALL
+        PUSH R0
+        PUSH R1
+        CALL cluster_add
+        POP R1
+        POP R0
+    make_noise_loop4_if:
+    INC R1
+    CMP R1, WIDE*TALL
+    JL make_noise_loop4
+// END LOOP 4
+
+MOV R1, R0
+make_noise_loop5:
+    
+    MOV EAX, [void_x]
+    MOV EBX, [void_y]
+    MOV ECX, EAX
+    MUL ECX, TALL
+    ADD ECX, EBX
+    MOV [ECX:bool_image], 1
+    MOV [ECX:blue_image], R1
+    PUSH R0
+    PUSH R1
+    MOV R0, EAX
+    MOV R1, EBX
+    CALL redraw_pixel_blue
+    CALL cluster_add
+    POP R1
+    POP R0
+    INC R1
+    CMP R1, WIDE*TALL
+    JNE make_noise_loop5
+// END LOOP 5
+
+POP EDI
+POP ESI
+POP EDX
+POP ECX
+POP EBX
+POP EAX
+RET
+
+
+main_end:
+JMP main_end
